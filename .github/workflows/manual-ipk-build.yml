@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sdk_url:
-        description: OpenWrt SDK download URL
+        description: OpenWrt SDK download URL (override when newer versions are available)
         required: false
         default: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
       package_name:
@@ -77,7 +77,16 @@ jobs:
         run: |
           cd "$SDK_DIR"
           mkdir -p "package/$PKG_NAME"
-          EXCLUDES=(--exclude .git --exclude .github --exclude .gitignore --exclude '*.swp' --exclude '.*.swp' --exclude .DS_Store --exclude node_modules --exclude '*.tmp')
+          EXCLUDES=(
+            --exclude .git
+            --exclude .github
+            --exclude .gitignore
+            --exclude '*.swp'
+            --exclude '.*.swp'
+            --exclude .DS_Store
+            --exclude node_modules
+            --exclude '*.tmp'
+          )
           rsync -a --delete "${EXCLUDES[@]}" "$GITHUB_WORKSPACE/" "package/$PKG_NAME/"
           echo "CONFIG_PACKAGE_${PKG_NAME}=m" > .config
           make defconfig
@@ -86,7 +95,7 @@ jobs:
         run: |
           cd "$SDK_DIR"
           make package/$PKG_NAME/compile -j$(nproc) V=s
-          mapfile -t ipk_array < <(find "$SDK_DIR/bin/packages" -name "${PKG_NAME}*.ipk" -print)
+          mapfile -t ipk_array < <(find "$SDK_DIR/bin/packages" -name "$(printf '%s*.ipk' "$PKG_NAME")" -print)
           match_count=${#ipk_array[@]}
           if [ "$match_count" -eq 0 ]; then
             echo "IPK not found"
