@@ -42,12 +42,17 @@ jobs:
           cd /tmp/sdk
           wget "$SDK_URL" -O sdk.tar.xz
           tar xf sdk.tar.xz
-          sdk_dir=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*-Linux-*" | head -n 1)
+          sdk_dir=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*" | head -n 1)
           if [ -z "$sdk_dir" ]; then
             echo "SDK directory not found"
             exit 1
           fi
-          echo "SDK_DIR=/tmp/sdk/$sdk_dir" >> $GITHUB_ENV
+          sdk_dir="/tmp/sdk/$sdk_dir"
+          if [ ! -x "$sdk_dir/scripts/feeds" ]; then
+            echo "Invalid SDK directory structure"
+            exit 1
+          fi
+          echo "SDK_DIR=$sdk_dir" >> $GITHUB_ENV
 
       - name: Set package variables
         run: |
@@ -65,7 +70,8 @@ jobs:
         run: |
           cd "$SDK_DIR"
           mkdir -p "package/$PKG_NAME"
-          rsync -a --delete --exclude ".git" --exclude ".github" "$GITHUB_WORKSPACE/" "package/$PKG_NAME/"
+          rsync -a --delete --exclude ".git" --exclude ".github" --exclude ".gitignore" \
+            --exclude "*.swp" --exclude ".DS_Store" "$GITHUB_WORKSPACE/" "package/$PKG_NAME/"
           echo "CONFIG_PACKAGE_${PKG_NAME}=m" > .config
           make defconfig
 
@@ -73,10 +79,19 @@ jobs:
         run: |
           cd "$SDK_DIR"
           make package/$PKG_NAME/compile -j$(nproc) V=s
-          ipk_path=$(find "$SDK_DIR/bin/packages" -name "${PKG_NAME}*.ipk" | head -n 1)
-          if [ -z "$ipk_path" ]; then
+          ipk_matches=$(find "$SDK_DIR/bin/packages" -name "${PKG_NAME}*.ipk")
+          if [ -z "$ipk_matches" ]; then
             echo "IPK not found"
             exit 1
+          fi
+          match_count=$(echo "$ipk_matches" | wc -l)
+          if [ "$match_count" -gt 1 ]; then
+            echo "Multiple IPKs found:"
+            echo "$ipk_matches"
+            ipk_path=$(echo "$ipk_matches" | head -n 1)
+            echo "Using first: $ipk_path"
+          else
+            ipk_path="$ipk_matches"
           fi
           echo "Found IPK: $ipk_path"
           echo "IPK_PATH=$ipk_path" >> $GITHUB_ENV
