@@ -35,9 +35,23 @@ jobs:
             libncurses5-dev libssl-dev python3-distutils python3-setuptools \
             rsync unzip wget
 
+      - name: Ensure GitHub CLI
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y gh
+          fi
+
       - name: Download OpenWrt SDK
         run: |
           SDK_URL="${{ github.event.inputs.sdk_url }}"
+          case "$SDK_URL" in
+            http://*|https://*) ;;
+            *)
+              echo "Invalid SDK URL: $SDK_URL"
+              exit 1
+              ;;
+          esac
           mkdir -p /tmp/sdk
           cd /tmp/sdk
           wget "$SDK_URL" -O sdk.tar.xz
@@ -70,8 +84,8 @@ jobs:
         run: |
           cd "$SDK_DIR"
           mkdir -p "package/$PKG_NAME"
-          rsync -a --delete --exclude ".git" --exclude ".github" --exclude ".gitignore" \
-            --exclude "*.swp" --exclude ".DS_Store" "$GITHUB_WORKSPACE/" "package/$PKG_NAME/"
+          EXCLUDES="--exclude .git --exclude .github --exclude .gitignore --exclude '*.swp' --exclude .DS_Store"
+          rsync -a --delete $EXCLUDES "$GITHUB_WORKSPACE/" "package/$PKG_NAME/"
           echo "CONFIG_PACKAGE_${PKG_NAME}=m" > .config
           make defconfig
 
@@ -84,7 +98,7 @@ jobs:
             echo "IPK not found"
             exit 1
           fi
-          match_count=$(printf "%s\n" "$ipk_matches" | grep -c .)
+          match_count=$(printf "%s\n" "$ipk_matches" | wc -l)
           if [ "$match_count" -gt 1 ]; then
             echo "Multiple IPKs found:"
             echo "$ipk_matches"
