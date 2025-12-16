@@ -37,9 +37,13 @@ jobs:
           [ -z "$SDK_URL" ] && SDK_URL="https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           mkdir -p /tmp/sdk
           cd /tmp/sdk
-          wget -q "$SDK_URL" -O sdk.tar.xz
+          wget "$SDK_URL" -O sdk.tar.xz
           tar xf sdk.tar.xz
           sdk_dir=$(find . -maxdepth 1 -type d -name "openwrt-sdk*" | head -n 1)
+          if [ -z "$sdk_dir" ]; then
+            echo "SDK directory not found"
+            exit 1
+          fi
           echo "SDK_DIR=/tmp/sdk/$sdk_dir" >> $GITHUB_ENV
 
       - name: Prepare feeds
@@ -60,13 +64,12 @@ jobs:
         run: |
           cd "$SDK_DIR"
           make package/luci-app-xlnetacc/compile -j$(nproc) V=s
-          find bin/packages -name "luci-app-xlnetacc*.ipk" -print > /tmp/ipk_list
-          cat /tmp/ipk_list
-          ipk_path=$(head -n 1 /tmp/ipk_list)
+          ipk_path=$(find "$SDK_DIR/bin/packages" -name "luci-app-xlnetacc*.ipk" | head -n 1)
           if [ -z "$ipk_path" ]; then
             echo "IPK not found"
             exit 1
           fi
+          echo "Found IPK: $ipk_path"
           echo "IPK_PATH=$ipk_path" >> $GITHUB_ENV
           echo "IPK_NAME=$(basename "$ipk_path")" >> $GITHUB_ENV
 
