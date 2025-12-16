@@ -28,6 +28,10 @@ http_args=
 user_agent=
 link_cn=
 lasterr=
+chatgpt_base_url=
+chatgpt_api_key=
+chatgpt_model=
+captcha_auto_retry=0
 sequence_xl=1000000
 sequence_down=$(( $(date +%s) / 6 ))
 sequence_up=$sequence_down
@@ -194,6 +198,86 @@ swjsq_get_verify_code() {
 	rm -f "$header_file"
 }
 
+# 使用 AI 识别验证码
+swjsq_ai_recognize() {
+	local image_file=$1
+	[ -s "$image_file" ] || return 1
+	[ -z "$chatgpt_api_key" ] && return 2
+
+	local endpoint="${chatgpt_base_url:-https://openrouter.ai/api/v1}"
+	case "$endpoint" in
+		*/chat/completions) ;;
+		*/) endpoint="${endpoint}chat/completions";;
+		*) endpoint="${endpoint%/}/chat/completions";;
+	esac
+	local model="${chatgpt_model:-google/gemini-2.0-flash-exp:free}"
+	local img_base64=$(base64 "$image_file" | tr -d '\n')
+	[ -z "$img_base64" ] && return 1
+
+	local payload="/tmp/xlnetacc_chat_payload.json"
+	cat > "$payload" <<-EOF
+	{
+	  "model": "$model",
+	  "messages": [
+	    {
+	      "role": "user",
+	      "content": [
+	        { "type": "text", "text": "识别图片中的验证码，仅返回验证码字符，勿添加其他内容。" },
+	        { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,$img_base64" } }
+	      ]
+	    }
+	  ],
+	  "max_tokens": 30,
+	  "temperature": 0
+	}
+	EOF
+
+	local response
+	response=$($_http_cmd --header="Content-Type: application/json" --header="Authorization: Bearer $chatgpt_api_key" --post-file="$payload" "$endpoint")
+	local ret=$?
+	rm -f "$payload"
+	[ $ret -ne 0 ] && { _log "验证码识别请求失败" $(( 1 | 4 )); return 1; }
+
+	local content
+	json_cleanup; json_load "$response" >/dev/null 2>&1
+	json_select "choices" >/dev/null 2>&1 || return 1
+	json_select 1 >/dev/null 2>&1 || return 1
+	json_select "message" >/dev/null 2>&1 || return 1
+	json_get_var content "content"
+	json_select ".." >/dev/null 2>&1
+	json_select ".." >/dev/null 2>&1
+	json_select ".." >/dev/null 2>&1
+	[ -z "$content" ] && return 1
+	content=$(echo "$content" | tr -d '\r' | head -n 1)
+	content=$(echo "$content" | tr -d ' \t\r\n')
+	echo -n "$content"
+	return 0
+}
+
+# 自动识别验证码并重试登录
+swjsq_auto_verify() {
+	local verify_type=$1
+	local code_file="/tmp/xlnetacc_verify_code"
+	local image_file="/tmp/xlnetacc_verify.jpg"
+	local max_retry=5
+
+	[ -n "$chatgpt_api_key" ] || return 1
+	while [ $captcha_auto_retry -lt $max_retry ]; do
+		local code=$(swjsq_ai_recognize "$image_file")
+		captcha_auto_retry=$(( $captcha_auto_retry + 1 ))
+		if [ -n "$code" ]; then
+			echo -n "$code" > "$code_file"
+			_log "自动识别验证码: $code (第${captcha_auto_retry}次尝试)"
+			swjsq_login
+			return $?
+		fi
+		_log "自动识别验证码失败 (第${captcha_auto_retry}次)，重新获取验证码"
+		swjsq_get_verify_code "${verify_type:-MEA}"
+	done
+	_log "自动识别验证码失败次数达到上限，切换为手动输入模式"
+	return 1
+}
+
 # 帐号登录
 swjsq_login() {
 	swjsq_json
@@ -247,6 +331,7 @@ swjsq_login() {
 			json_get_var _sessionid "sessionID"
 			_log "_sessionid is $_sessionid" $(( 1 | 4 ))
 			local outmsg="帐号登录成功"; _log "$outmsg" $(( 1 | 8 ))
+			captcha_auto_retry=0
 			rm -f /tmp/xlnetacc_verify.jpg /tmp/xlnetacc_verify_key /tmp/xlnetacc_verify_code 2>/dev/null
 			;;
 		6)
@@ -258,7 +343,13 @@ swjsq_login() {
 			local wait_time=180
 			local code_file="/tmp/xlnetacc_verify_code"
 			rm -f "$code_file"
-			
+			if [ -z "$chatgpt_api_key" ]; then
+				_log "未配置验证码识别 API Key，使用手动输入模式"
+			else
+				swjsq_auto_verify "${verify_type:-MEA}"
+				[ $? -eq 0 ] && return 0
+			fi
+
 			_log "请查看 /www/luci-static/resources/xlnetacc_verify.jpg 获取验证码"
 			_log "或打开浏览器访问 http://<路由器IP地址>/luci-static/resources/xlnetacc_verify.jpg"
 			_log "请在 ${wait_time} 秒内将验证码写入 $code_file"
@@ -699,6 +790,11 @@ xlnetacc_init() {
 	relogin=$(uci_get_by_name "general" "relogin" 0)
 	readonly username=$(uci_get_by_name "general" "account")
 	readonly password=$(uci_get_by_name "general" "password")
+	chatgpt_base_url=$(uci_get_by_name "general" "base_url" "https://openrouter.ai/api/v1")
+	chatgpt_model=$(uci_get_by_name "general" "model" "google/gemini-2.0-flash-exp:free")
+	chatgpt_api_key=$(uci_get_by_name "general" "api_key")
+	[ -z "$chatgpt_base_url" ] && chatgpt_base_url="https://openrouter.ai/api/v1"
+	[ -z "$chatgpt_model" ] && chatgpt_model="google/gemini-2.0-flash-exp:free"
 	local enabled=$(uci_get_by_bool "general" "enabled" 0)
 	([ $enabled -eq 0 ] || [ $down_acc -eq 0 -a $up_acc -eq 0 ] || [ -z "$username" -o -z "$password" -o -z "$network" ]) && return 2
 	([ -z "$keepalive" -o -n "${keepalive//[0-9]/}" ] || [ $keepalive -lt 5 -o $keepalive -gt 60 ]) && keepalive=10
